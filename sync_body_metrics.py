@@ -1,52 +1,76 @@
 import os
 import json
-import datetime
-import urllib.parse
-
 import requests
+from datetime import datetime, timezone
+
+
+WEBHOOK_SITE_URL = os.environ.get("WEBHOOK_SITE_URL")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
 
 def fetch_webhook_requests():
-    """
-    Webhook.site から最近のリクエスト一覧を取得して返す。
-    """
-    webhook_url = os.environ["WEBHOOK_SITE_URL"].rstrip("/")
-    # 例: https://webhook.site/29a5237e-2734-46f1-bbc6-560353841d19
+    if not WEBHOOK_SITE_URL:
+        raise RuntimeError("WEBHOOK_SITE_URL is not set")
 
-    parsed = urllib.parse.urlparse(webhook_url)
-    request_list_url = f"{parsed.scheme}://{parsed.netloc}/token/{parsed.path.strip('/')}/requests"
+    # Webhook.site の「Get Requests」エンドポイントを叩く
+    # 例: https://webhook.site/token/<token>/requests?sorting=newest
+    # ここでは URL 全体を Secret に入れてもらっている前提
+    url = WEBHOOK_SITE_URL
 
-    params = {
-        "limit": 100,
-        "sort": "desc"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
     }
 
-    resp = requests.get(request_list_url, params=params, timeout=10)
+    params = {
+        "sorting": "newest",
+        "limit": 100,
+    }
+
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
     resp.raise_for_status()
+
     data = resp.json()
+
+    # Webhook.site の API は通常、リストを返すか、{"data": [...]} の形
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
+        return data["data"]
+
+    # それ以外の形ならそのまま返す（後段で防御的に扱う）
     return data
 
 
 def parse_body_metrics(requests_json):
-    """
-    Webhook.site のリクエスト配列から body_metrics 用のレコードを抽出。
-    """
     records = []
 
     for item in requests_json:
-        body = item.get("content") or item.get("body") or ""
+        # ここが今回の修正ポイント:
+        # Webhook.site から返ってきている要素が「文字列」であるケースを前提にする
+        # （前のバージョンでは dict を想定して item.get(...) していた）
+        if not isinstance(item, str):
+            # dict や他の型が紛れていても、とりあえず無視する
+            continue
+
+        body = item
         if not body:
             continue
 
+        # 1段目の JSON: Shortcut が送っている外側の JSON 文字列
         try:
             outer = json.loads(body)
         except Exception:
+            # JSON でなければスキップ
             continue
 
         payload_str = outer.get("payload")
         if not payload_str or not isinstance(payload_str, str):
+            # payload がなければスキップ
             continue
 
+        # 2段目の JSON: payload の中身（これも JSON 文字列）
         try:
             payload = json.loads(payload_str)
         except Exception:
@@ -58,11 +82,13 @@ def parse_body_metrics(requests_json):
         source = payload.get("source", "shortcut")
 
         if not metric_type or timestamp is None or value is None:
+            # 必須フィールドが足りないものはスキップ
             continue
 
         try:
             value_num = float(value)
         except Exception:
+            # 数値に変換できなければスキップ
             continue
 
         rounded_value = round(value_num, 2)
@@ -79,47 +105,45 @@ def parse_body_metrics(requests_json):
     return records
 
 
-def insert_into_supabase(records):
-    """
-    Supabase の body_metrics テーブルにまとめて INSERT する。
-    """
+def upsert_to_supabase(records):
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise RuntimeError("SUPABASE_URL or SUPABASE_ANON_KEY is not set")
+
     if not records:
-        print("No records to insert.")
+        print("No records to upsert into Supabase.")
         return
 
-    supabase_url = os.environ["SUPABASE_URL"].rstrip("/")
-    anon_key = os.environ["SUPABASE_ANON_KEY"]
-
-    endpoint = f"{supabase_url}/rest/v1/body_metrics"
+    url = f"{SUPABASE_URL}/rest/v1/body_metrics"
 
     headers = {
-        "apikey": anon_key,
-        "Authorization": f"Bearer {anon_key}",
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal",
+        "Prefer": "return=representation",
     }
 
-    resp = requests.post(endpoint, headers=headers, json=records, timeout=15)
+    resp = requests.post(url, headers=headers, data=json.dumps(records), timeout=30)
+
     if not resp.ok:
-        print("Supabase insert failed:", resp.status_code, resp.text)
+        print("Supabase error status:", resp.status_code)
+        print("Supabase error body:", resp.text)
         resp.raise_for_status()
-    else:
-        print(f"Inserted {len(records)} records into Supabase.")
+
+    print(f"Inserted {len(records)} records into Supabase.")
 
 
 def main():
     print("Fetching webhook requests...")
     requests_json = fetch_webhook_requests()
-    print(f"Fetched {len(requests_json)} requests from Webhook.site.")
+    print(f"Fetched {len(requests_json) if hasattr(requests_json, '__len__') else 'unknown number of'} requests from Webhook.site.")
 
     print("Parsing body_metrics records...")
     records = parse_body_metrics(requests_json)
     print(f"Parsed {len(records)} body_metrics records.")
 
-    if records:
-        insert_into_supabase(records)
-    else:
-        print("No valid body_metrics records found.")
+    print("Upserting into Supabase...")
+    upsert_to_supabase(records)
+    print("Done.")
 
 
 if __name__ == "__main__":
