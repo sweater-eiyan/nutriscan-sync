@@ -6,33 +6,16 @@ def parse_body_metrics(requests_json):
         if not isinstance(item, dict):
             continue
 
-        # Webhook.site のレスポンス仕様に合わせて body/content を取得
-        # 参考: docs.webhook.site の Requests API [web:107]
-        body = item.get("content") or item.get("body") or ""
+        # docs と実データを見る限り、body にそのまま JSON 文字列が入っている [web:107]
+        body = item.get("body") or item.get("content") or ""
         if not body:
             continue
 
-        # body がすでに dict で来ている可能性と、文字列 JSON の可能性の両方を見る
-        if isinstance(body, dict):
-            outer = body
-        else:
-            try:
-                outer = json.loads(body)
-            except Exception:
-                continue
-
-        payload_str = outer.get("payload")
-        if not payload_str:
+        # body は JSON 文字列（例: {"metric_type":"weight","value":63.4,"timestamp":"..."}）
+        try:
+            payload = json.loads(body)
+        except Exception:
             continue
-
-        # payload が dict か文字列か両方を見る
-        if isinstance(payload_str, dict):
-            payload = payload_str
-        else:
-            try:
-                payload = json.loads(payload_str)
-            except Exception:
-                continue
 
         metric_type = payload.get("metric_type")
         timestamp = payload.get("timestamp")
