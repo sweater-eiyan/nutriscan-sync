@@ -1,7 +1,6 @@
 import os
 import json
 import requests
-from datetime import datetime, timezone
 
 
 WEBHOOK_SITE_URL = os.environ.get("WEBHOOK_SITE_URL")
@@ -14,7 +13,6 @@ def fetch_webhook_requests():
         raise RuntimeError("WEBHOOK_SITE_URL is not set")
 
     # Webhook.site の「Get Requests」エンドポイントを叩く
-    # 例: https://webhook.site/token/<token>/requests?sorting=newest
     # ここでは URL 全体を Secret に入れてもらっている前提
     url = WEBHOOK_SITE_URL
 
@@ -49,7 +47,6 @@ def parse_body_metrics(requests_json):
     for item in requests_json:
         # ここが今回の修正ポイント:
         # Webhook.site から返ってきている要素が「文字列」であるケースを前提にする
-        # （前のバージョンでは dict を想定して item.get(...) していた）
         if not isinstance(item, str):
             # dict や他の型が紛れていても、とりあえず無視する
             continue
@@ -135,7 +132,9 @@ def upsert_to_supabase(records):
 def main():
     print("Fetching webhook requests...")
     requests_json = fetch_webhook_requests()
-    print(f"Fetched {len(requests_json) if hasattr(requests_json, '__len__') else 'unknown number of'} requests from Webhook.site.")
+    print(
+        f"Fetched {len(requests_json) if hasattr(requests_json, '__len__') else 'unknown number of'} requests from Webhook.site."
+    )
 
     print("Parsing body_metrics records...")
     records = parse_body_metrics(requests_json)
