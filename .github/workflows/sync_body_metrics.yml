@@ -29,4 +29,4 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          python sync_body_metrics.py
+          python sync_body_metrics_v2.py
