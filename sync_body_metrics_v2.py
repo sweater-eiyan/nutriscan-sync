@@ -9,21 +9,15 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
 
 def fetch_webhook_requests():
-    """
-    Webhook.site の Requests API から最新リクエスト一覧を取得して、
-    各リクエストを表す dict のリストとして返す。
-    """
     if not WEBHOOK_SITE_URL:
         raise RuntimeError("WEBHOOK_SITE_URL is not set")
 
-    # ここには「/token/<token>/requests」まで含んだ URL を想定
     url = WEBHOOK_SITE_URL
 
     headers = {
         "Accept": "application/json",
     }
 
-    # per_page / sorting は公式サンプルに合わせて指定[web:130]
     params = {
         "per_page": 100,
         "sorting": "newest",
@@ -34,57 +28,59 @@ def fetch_webhook_requests():
 
     data = resp.json()
 
-    # パターン1: {"data": [...], "total": N}
     if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
         return data["data"]
 
-    # パターン2: いきなり配列が返るケース
     if isinstance(data, list):
         return data
 
-    # 想定外の形は空にしておく（後段で len=0 として扱う）
     return []
 
 
 def parse_body_metrics(request_items):
-    """
-    Webhook.site のリクエスト一覧から、body_metrics テーブル用のレコードを組み立てる。
-    """
     records = []
 
     for item in request_items:
-        # 各要素は dict 前提
         if not isinstance(item, dict):
             continue
 
-        # Webhook.site では request body は content フィールドに入る[web:130]
+        # Webhook.site の content フィールドにリクエストボディが入っている
         content = item.get("content")
         if not content:
             continue
 
-        # content は JSON 文字列（Shortcut から送った payload）
+        # content は JSON 文字列: {"payload": "...JSON文字列..."}
         try:
-            payload = json.loads(content)
+            outer = json.loads(content)
         except Exception:
-            # JSON でないものはスキップ
             continue
+
+        # payload フィールドを取り出す（文字列 or dict 両対応）
+        payload_raw = outer.get("payload")
+        if not payload_raw:
+            continue
+
+        if isinstance(payload_raw, dict):
+            payload = payload_raw
+        else:
+            try:
+                payload = json.loads(payload_raw)
+            except Exception:
+                continue
 
         metric_type = payload.get("metric_type")
         timestamp = payload.get("timestamp")
         value = payload.get("value")
         source = payload.get("source", "shortcut")
 
-        # 必須フィールドが欠けているものは捨てる
         if not metric_type or timestamp is None or value is None:
             continue
 
-        # value は文字列 or 数値どちらでも float にして扱う
         try:
             value_num = float(value)
         except Exception:
             continue
 
-        # 小数点2桁に丸め
         rounded_value = round(value_num, 2)
 
         records.append(
@@ -100,9 +96,6 @@ def parse_body_metrics(request_items):
 
 
 def upsert_to_supabase(records):
-    """
-    Supabase の body_metrics テーブルにレコードを挿入する。
-    """
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         raise RuntimeError("SUPABASE_URL or SUPABASE_ANON_KEY is not set")
 
