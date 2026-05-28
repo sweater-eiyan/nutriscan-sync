@@ -29,4 +29,27 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
+          echo "=== DEBUG: python version / cwd / ls ==="
+          python -c "import sys, os; print('PYTHON:', sys.version); print('CWD:', os.getcwd()); print('ARGV:', sys.argv)"
+          ls -R
+          echo "=== DEBUG: show sync_body_metrics.py content that is ACTUALLY imported ==="
+          python - << 'EOF'
+import os, sys, inspect
+
+print("CWD:", os.getcwd())
+print("sys.path:", sys.path)
+
+try:
+    import sync_body_metrics
+    print("sync_body_metrics module file:", sync_body_metrics.__file__)
+    print("----- sync_body_metrics.py source start -----")
+    print(inspect.getsource(sync_body_metrics))
+    print("----- sync_body_metrics.py source end -----")
+except Exception as e:
+    print("FAILED TO IMPORT sync_body_metrics:", repr(e))
+    raise
+
+EOF
+
+          echo "=== RUN ACTUAL SCRIPT ==="
           python sync_body_metrics.py
