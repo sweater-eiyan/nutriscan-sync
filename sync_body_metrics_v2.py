@@ -15,13 +15,8 @@ def fetch_webhook_requests():
     if not WEBHOOK_SITE_URL:
         raise RuntimeError("WEBHOOK_SITE_URL is not set")
     url = WEBHOOK_SITE_URL
-    headers = {
-        "Accept": "application/json",
-    }
-    params = {
-        "per_page": 100,
-        "sorting": "newest",
-    }
+    headers = {"Accept": "application/json"}
+    params = {"per_page": 100, "sorting": "newest"}
     resp = requests.get(url, headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -33,26 +28,22 @@ def fetch_webhook_requests():
 
 
 def parse_payload(item):
-    """Webhook.site の1リクエストから payload dict を返す。失敗時は None。"""
     if not isinstance(item, dict):
         return None
     content = item.get("content")
     if not content:
         return None
-    # 1段目: content が JSON 文字列かどうか試みる
     try:
         outer = json.loads(content)
     except Exception:
         return None
     if not isinstance(outer, dict):
         return None
-    # 2段目: payload フィールドを取り出す
     payload_raw = outer.get("payload")
     if payload_raw is None:
         return None
     if isinstance(payload_raw, dict):
         return payload_raw
-    # payload が文字列の場合はさらに JSON パース
     try:
         payload = json.loads(payload_raw)
         if isinstance(payload, dict):
@@ -63,13 +54,7 @@ def parse_payload(item):
 
 
 def group_by_date(request_items):
-    """
-    各リクエストから metric_type / value / timestamp を取り出し、
-    JST 日付をキーに {weight, body_fat} を集約する。
-    戻り値: {"YYYY-MM-DD": {"weight_kg": float|None, "body_fat_pct": float|None, "source": str}}
-    """
     day_data = defaultdict(lambda: {"weight_kg": None, "body_fat_pct": None, "source": "shortcut"})
-
     for item in request_items:
         payload = parse_payload(item)
         if payload is None:
@@ -78,17 +63,13 @@ def group_by_date(request_items):
         timestamp_str = payload.get("timestamp")
         value = payload.get("value")
         source = payload.get("source", "shortcut")
-
         if not metric_type or timestamp_str is None or value is None:
             continue
         try:
             value_num = round(float(value), 2)
         except Exception:
             continue
-
-        # timestamp を JST 日付に変換
         try:
-            # +0900 などのオフセット付き文字列に対応
             dt = datetime.fromisoformat(timestamp_str)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=JST)
@@ -96,47 +77,34 @@ def group_by_date(request_items):
             date_key = dt_jst.strftime("%Y-%m-%d")
         except Exception:
             continue
-
         if metric_type == "weight":
             day_data[date_key]["weight_kg"] = value_num
             day_data[date_key]["source"] = source
         elif metric_type == "body_fat":
             day_data[date_key]["body_fat_pct"] = value_num
             day_data[date_key]["source"] = source
-
     return day_data
 
 
 def build_records(day_data):
-    """
-    day_data を nutriscan-cloud の body_metrics スキーマに変換する。
-    lbm_kg = weight_kg * (1 - body_fat_pct / 100)
-    """
     records = []
     for date_str, metrics in day_data.items():
         weight_kg = metrics.get("weight_kg")
         body_fat_pct = metrics.get("body_fat_pct")
         source = metrics.get("source", "shortcut")
-
-        # weight か body_fat のどちらか一方でもあればレコード作成
         if weight_kg is None and body_fat_pct is None:
             continue
-
         lbm_kg = None
         if weight_kg is not None and body_fat_pct is not None:
             lbm_kg = round(weight_kg * (1 - body_fat_pct / 100), 2)
-
+        # PGRST102 対応: 全レコードで同じキーセットを保持する (None を明示的に入れる)
         record = {
             "date": date_str,
             "source": source,
+            "weight_kg": weight_kg,
+            "body_fat_pct": body_fat_pct,
+            "lbm_kg": lbm_kg,
         }
-        if weight_kg is not None:
-            record["weight_kg"] = weight_kg
-        if body_fat_pct is not None:
-            record["body_fat_pct"] = body_fat_pct
-        if lbm_kg is not None:
-            record["lbm_kg"] = lbm_kg
-
         records.append(record)
     return records
 
@@ -169,17 +137,14 @@ def main():
     print("Fetching webhook requests...")
     items = fetch_webhook_requests()
     print(f"Fetched {len(items)} requests from Webhook.site.")
-
     print("Grouping by date...")
     day_data = group_by_date(items)
     print(f"Found data for {len(day_data)} date(s): {list(day_data.keys())}")
-
     print("Building records...")
     records = build_records(day_data)
     print(f"Built {len(records)} record(s):")
     for r in records:
         print(" -", r)
-
     print("Upserting into Supabase...")
     upsert_to_supabase(records)
     print("Done.")
