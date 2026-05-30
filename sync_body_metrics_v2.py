@@ -109,13 +109,26 @@ def build_records(day_data):
     return records
 
 
+def filter_latest_date_only(records):
+    """
+    records の中で一番新しい date のものだけに絞る。
+    通常運用では「直近1日分だけ同期」するためのフィルタ。
+    """
+    if not records:
+        return records
+    latest_date = max(r["date"] for r in records)
+    return [r for r in records if r["date"] == latest_date]
+
+
 def upsert_to_supabase(records):
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         raise RuntimeError("SUPABASE_URL or SUPABASE_ANON_KEY is not set")
     if not records:
         print("No records to upsert into Supabase.")
         return
-    url = f"{SUPABASE_URL}/rest/v1/body_metrics"
+
+    # date を conflict target にして UPSERT（同一日付は上書き）
+    url = f"{SUPABASE_URL}/rest/v1/body_metrics?on_conflict=date"
     headers = {
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
@@ -137,14 +150,23 @@ def main():
     print("Fetching webhook requests...")
     items = fetch_webhook_requests()
     print(f"Fetched {len(items)} requests from Webhook.site.")
+
     print("Grouping by date...")
     day_data = group_by_date(items)
     print(f"Found data for {len(day_data)} date(s): {list(day_data.keys())}")
+
     print("Building records...")
     records = build_records(day_data)
     print(f"Built {len(records)} record(s):")
     for r in records:
         print(" -", r)
+
+    # ★ 直近1日分だけに絞る
+    records = filter_latest_date_only(records)
+    print(f"Using {len(records)} record(s) for upsert (latest date only):")
+    for r in records:
+        print(" -", r)
+
     print("Upserting into Supabase...")
     upsert_to_supabase(records)
     print("Done.")
